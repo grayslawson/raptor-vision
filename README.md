@@ -1,8 +1,8 @@
 # raptor-vision
 
 The part of Kestrel and Osprey that looks at a security-camera picture and says what is where. Give it a frame and a model
-and it gives back labelled regions (driveway, door, sky, street and so on) as polygons. It never moves a camera and never
-writes to an NVR.
+and it gives back labelled regions (driveway, door, sky, street and so on) as polygons. It never moves a camera. The one
+thing it can write to an NVR is Frigate zones and masks, through the guarded writer below, and only when you switch writing on.
 
 Used by [Kestrel](https://github.com/grayslawson/kestrel) (proposes Frigate zones and masks) and
 [Osprey](https://github.com/grayslawson/osprey) (Assist and Survey, for PTZ cameras). Each product still runs on its own.
@@ -27,6 +27,25 @@ Python 3.11 or newer.
 - `ProviderConfig` and `TaskConfig` are plain config; `interest(...)` scores a region 0..1; `MapStore` keeps a JSON body plus
   named files per camera and kind, newest few only.
 - With `[segment]`: `raptor_vision.segment.OnnxSegmenter` and `raptor_vision.refine` snap model polygons to real edges.
+
+## Writing zones and masks to Frigate
+
+`raptor_vision.frigate` is the one place that changes a Frigate config, so nobody ever has to copy and paste YAML. It is
+stdlib only and read-only until you pass `allow_write=True`.
+
+```python
+from raptor_vision.frigate import Change, FrigateClient, Writer
+
+w = Writer(FrigateClient("http://frigate:5000", token_file="/run/secrets/frigate"), allow_write=True)
+plan = w.plan([Change("zone", "front", "rv_driveway", [(0.1, 0.5), (0.9, 0.5), (0.9, 0.95), (0.1, 0.95)], objects=("car",))])
+print(plan.diff)                                   # show this to the person
+result = w.apply(plan, approved_by="grays", backup_dir="/data/frigate-backups")
+w.rollback(result.handle)                          # if they change their mind
+```
+
+It checks the Frigate version, refuses locked or hand-made items, backs up the config, refuses a stale plan, reads the result
+back, and can roll back. Privacy masks always need `approved_by`. Only one writer per Frigate: Kestrel when present, else
+Osprey. Details in [docs/frigate-writer.md](docs/frigate-writer.md).
 
 ## History
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `frigate`: the shared, safe Frigate config writer (`FrigateClient`, `Writer`, `Change`). Read-only by default. See docs/frigate-writer.md.
+
 ## 0.1.0 (unreleased)
 
 First release: the scene layer, merged from Osprey Assist and Kestrel. No consumer has switched to it yet.
