@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "raptor-vision"
-version = "0.1.0"
+version = "0.2.0"
 description = "Scene understanding for security cameras: labelled regions from a picture, shared by Kestrel and Osprey."
 readme = "README.md"
 license = "MIT"
@@ -14,6 +14,7 @@ dependencies = ["Pillow>=10.0"]
 
 [project.optional-dependencies]
 segment = ["numpy>=1.26", "onnxruntime>=1.17"]
+entry = ["transformers>=4.45", "torch>=2.2"]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11", "numpy>=1.26", "onnxruntime>=1.17"]
 
 [project.urls]
@@ -35,7 +36,7 @@ strict = true
 python_version = "3.11"
 
 [[tool.mypy.overrides]]
-module = ["onnxruntime", "onnxruntime.*"]
+module = ["onnxruntime", "onnxruntime.*", "torch", "torch.*", "transformers", "transformers.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

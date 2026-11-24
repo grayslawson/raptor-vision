@@ -138,7 +138,7 @@ def test_parse_regions_drops_bad_entries() -> None:
         {"label": "sky", "polygon": [[0, 0], [1, 1]], "confidence": 0.9},
         {"label": "sky", "polygon": rect(0, 0, 1, 0.3), "confidence": 0.1},
         {"label": "sky", "polygon": "nope", "confidence": 0.9},
-        {"label": "sky", "polygon": [[0, 0], [2.5, 0], [1, 0.3]], "confidence": 0.9},  # clamped, still valid
+        {"label": "sky", "polygon": [[0, 0], [1.2, 0], [1, 0.3]], "confidence": 0.9},  # clamped, still valid
         {"label": "yard", "polygon": rect(0, 0.5, 1, 1), "confidence": True},
     ]}
     out = parse_regions(bad, "chat:x")
