@@ -1,0 +1,13 @@
+raptor-vision
+Copyright (c) 2026 grayslawson. MIT licence, see LICENSE.
+
+The scene layer in this package was merged from two projects by the same author, and parts of it are copied from them:
+
+- Osprey (https://github.com/grayslawson/osprey, MIT): the provider cooldown, task config, label criteria, the rules floor,
+  the tile question and its validation, the interest score, and the shape of the map store (osprey/assist/providers.py,
+  decide.py, survey_understand.py, survey_map.py, survey_store.py).
+- Kestrel (private, same author): the provider config keys private and extra_body, the whole-picture chat labeller, the tile
+  merge, polygon geometry, segmentation and refinement (kestrel/scene/*).
+
+No pictures or model weights from either project are included. Segmentation models are not bundled; their licences are the
+user's to accept.
