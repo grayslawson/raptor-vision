@@ -1,9 +1,12 @@
 """Labelling: what is where in one picture. One ``Labeller`` for every case, one output type (``Region``).
 
-* A decisions provider labels each tile of a grid with a choice question, then same-label tiles are merged into polygons
-  (Osprey's survey tile call and Kestrel's ``label_with_decider`` were this one job).
-* A chat provider with no grid draws labelled polygons on the whole picture (Kestrel's ``label_with_chat``);
-  with a grid it labels tile by tile (Osprey Survey on chat).
+* A chat provider with no grid draws labelled polygons on the whole picture (Kestrel's ``label_with_chat``). This is the
+  default for drawing: it beat every tile grid, box and segmenter design in the 2026-11 bake-off (docs/bakeoff-2026-11.md).
+  The task's ``fallback`` models are tried in order when a call fails or gives no usable region; ``vote`` asks 2-3 models
+  and keeps what a majority drew (a trial, off by default).
+* A decisions provider labels each tile of a grid with a choice question, then same-label tiles are merged into polygons.
+  Decision models are for naming or voting on a region, not for drawing; a chat provider given a ``grid`` also labels
+  tile by tile. The tile grid stays available but is no longer the default way to draw.
 * The rules floor (sky, foliage, glare) names tiles when no model is set up, affordable or sure.
 
 ``Labeller.label(frame, labels=..., context=...)`` never raises on a model failure: it returns what it found. Pass
@@ -22,9 +25,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
-from PIL import Image, ImageFilter, ImageStat
+from PIL import Image, ImageChops, ImageFilter, ImageStat
 
-from .geometry import clamp, is_valid, mask_to_polygons
+from .geometry import clamp, is_valid, mask_to_polygons, rasterize
 from .labels import ALIASES, CRITERIA, LABELS, UNKNOWN, check_labels
 from .providers import ChatProvider, DecisionsProvider, ModelReply, ProviderError
 from .tasks import TaskConfig
@@ -122,8 +125,13 @@ def _frame_prompt(frame: Frame, labels: Sequence[str], context: str) -> str:
     )
 
 
-def parse_regions(data: dict[str, Any], source: str, min_conf: float = 0.3, labels: Sequence[str] = DEFAULT_LABELS) -> list[Region]:
-    """Validate a chat reply. Invalid regions are skipped silently; the caller sees fewer regions, not bad ones."""
+def parse_regions(data: dict[str, Any], source: str, min_conf: float = 0.3, labels: Sequence[str] = DEFAULT_LABELS,
+                  size: tuple[int, int] | None = None) -> list[Region]:
+    """Validate a chat reply. Invalid regions are skipped silently; the caller sees fewer regions, not bad ones.
+
+    Models often ignore "fractions": a polygon with a coordinate above 1.5 is read as 0..1000 (or as pixels of ``size``
+    when above 1000). A missing confidence counts as 0.5.
+    """
     out: list[Region] = []
     raw = data.get("regions")
     if not isinstance(raw, list):
@@ -132,16 +140,56 @@ def parse_regions(data: dict[str, Any], source: str, min_conf: float = 0.3, labe
         if not isinstance(r, dict) or r.get("label") not in labels:
             continue
         pts = r.get("polygon")
-        conf = r.get("confidence")
+        conf = r.get("confidence", 0.5)
         if not isinstance(pts, list) or isinstance(conf, bool) or not isinstance(conf, (int, float)):
             continue
         try:
-            poly: Poly = [(clamp(float(p[0])), clamp(float(p[1]))) for p in pts]
+            xy = [(float(p[0]), float(p[1])) for p in pts]
         except (TypeError, ValueError, IndexError):
             continue
+        top = max((max(abs(x), abs(y)) for x, y in xy), default=0.0)
+        if top > 1.5:
+            sx, sy = (1000.0, 1000.0) if top <= 1000.5 else (float(size[0]), float(size[1])) if size else (0.0, 0.0)
+            if not sx:
+                continue
+            xy = [(x / sx, y / sy) for x, y in xy]
+        poly: Poly = [(clamp(x), clamp(y)) for x, y in xy]
+        if conf > 1:
+            conf = conf / 100 if conf <= 100 else 1.0
         if conf < min_conf or not is_valid(poly):
             continue
         out.append(Region(str(r["label"]), poly, float(min(1.0, conf)), source))
+    return out
+
+
+# Which label keeps a pixel when a vote qualifies several (the bake-off's ground-truth order); the rest follow.
+_PRECEDENCE = ("timestamp", "door", "porch", "sidewalk", "street", "building", "foliage", "sky", "neighbour", "yard")
+_VOTE_RES = 160
+
+
+def vote_regions(drawn: Sequence[Sequence[Region]], source: str) -> list[Region]:
+    """Per-pixel majority over several models' drawings: a pixel takes a label if more than half of ``drawn`` drew it."""
+    need = len(drawn) // 2 + 1
+    present = {r.label for d in drawn for r in d}
+    order = [k for k in _PRECEDENCE if k in present] + sorted(present - set(_PRECEDENCE))
+    res = _VOTE_RES
+    votes: dict[str, list[int]] = {}
+    for label in order:
+        total = [0] * (res * res)
+        for d in drawn:
+            m = Image.new("L", (res, res), 0)
+            for r in d:
+                if r.label == label:
+                    m = ImageChops.lighter(m, rasterize(r.polygon, res, res))
+            total = [a + b for a, b in zip(total, m.tobytes(), strict=True)]
+        votes[label] = total
+    owner = [next((k for k in order if votes[k][i] >= need), "") for i in range(res * res)]
+    out: list[Region] = []
+    for label in order:
+        mask = [[owner[y * res + x] == label for x in range(res)] for y in range(res)]
+        confs = [r.confidence for d in drawn for r in d if r.label == label]
+        for poly in mask_to_polygons(mask, eps=0.01, min_area=0.002):
+            out.append(Region(label, poly, statistics.fmean(confs), source, note=f"vote {need} of {len(drawn)}"))
     return out
 
 
@@ -189,15 +237,19 @@ class Labeller:
     ``rules_floor``: name tiles the model did not (default). Kestrel has no rules and passes False.
     ``strict``: raise ``ProviderError`` when the model failed (most tiles, or the whole-picture call) instead of
     returning what was found.
-    A whole-picture chat call has no rules floor: when it fails you get an empty list.
+    A whole-picture chat call has no rules floor: when it fails you get an empty list. It tries ``task.model`` and then each
+    ``task.fallback`` model in order, and moves on when a call fails or returns no usable region.
+    ``vote``: two or three chat models (trial, off by default). All are asked in parallel and a pixel keeps a label that
+    more than half of the answering models drew; if only one answers, its drawing is used. ``task.model`` is not used then.
     ``log``: called with one dict per model call (provider, model, task, ms, tokens, cost, ok, error), from worker threads.
     """
 
     def __init__(self, task: TaskConfig, provider: ChatProvider | DecisionsProvider | None, *, name: str = "label",
                  grid: tuple[int, int] | None = None, concurrency: int = 4, merge: bool = True, rules_floor: bool = True,
-                 strict: bool = False, log: Callable[[dict[str, Any]], None] | None = None) -> None:
+                 strict: bool = False, vote: Sequence[str] = (), log: Callable[[dict[str, Any]], None] | None = None) -> None:
         self.task, self.provider, self.name = task, provider, name
         self.concurrency, self.merge, self.rules_floor, self.strict, self._log = max(1, concurrency), merge, rules_floor, strict, log
+        self.vote = tuple(vote)
         self.grid = grid
 
     @property
@@ -214,9 +266,10 @@ class Labeller:
         return self._tiles(frame, use, context, self.grid or DEFAULT_GRID)
 
     # -------------------------------------------------------------- plumbing
-    def _attempt(self, fn: Callable[[], ModelReply], check: Callable[[ModelReply], Any], *, raise_errors: bool = False) -> Any | None:
+    def _attempt(self, fn: Callable[[], ModelReply], check: Callable[[ModelReply], Any], *, raise_errors: bool = False,
+                 model: str | None = None) -> Any | None:
         assert self.provider is not None
-        rec: dict[str, Any] = {"ts": time.time(), "provider": self.provider.name, "model": self.task.model, "task": self.name,
+        rec: dict[str, Any] = {"ts": time.time(), "provider": self.provider.name, "model": model or self.task.model, "task": self.name,
                                "ms": None, "tokens_in": None, "tokens_out": None, "cost": None, "ok": False, "error": None}
         out = None
         try:
@@ -235,15 +288,35 @@ class Labeller:
         return out
 
     # ----------------------------------------------------- whole picture (chat)
-    def _whole(self, frame: Frame, labels: tuple[str, ...], context: str) -> list[Region]:
+    def _draw(self, frame: Frame, labels: tuple[str, ...], context: str, model: str, *, raise_errors: bool = False) -> list[Region] | None:
         p = self.provider
         assert isinstance(p, ChatProvider)
-        model = self.task.model or ""
-        out = self._attempt(
+        return self._attempt(
             lambda: p.complete(model, _FRAME_SYSTEM, _frame_prompt(frame, labels, context), [shrink(frame.jpeg)], _schema(labels)),
-            lambda r: parse_regions(r.data, f"chat:{r.model}", self.task.min_confidence, labels),
-            raise_errors=self.strict)
-        return out or []
+            lambda r: parse_regions(r.data, f"chat:{r.model}", self.task.min_confidence, labels, (frame.width, frame.height)),
+            raise_errors=raise_errors, model=model)
+
+    def _whole(self, frame: Frame, labels: tuple[str, ...], context: str) -> list[Region]:
+        models = [self.task.model or "", *(m for m, _ in self.task.fallback)]
+        if len(self.vote) >= 2:
+            with ThreadPoolExecutor(len(self.vote)) as pool:
+                got = list(pool.map(lambda m: self._draw(frame, labels, context, m), self.vote))
+            ok = [g for g in got if g]
+            if len(ok) < 2:
+                return ok[0] if ok else []
+            return vote_regions(ok, "vote:" + "+".join(self.vote))
+        last: Exception | None = None
+        for m in models:
+            try:
+                out = self._draw(frame, labels, context, m, raise_errors=self.strict)
+            except Exception as exc:  # strict only: remember the failure, try the next model, raise when none worked
+                last = exc
+                continue
+            if out:
+                return out
+        if self.strict and last is not None:
+            raise last
+        return []
 
     # ----------------------------------------------------------------- tiles
     def _tiles(self, frame: Frame, labels: tuple[str, ...], context: str, grid: tuple[int, int]) -> list[Region]:

@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (unreleased)
+
+The labeller after the 2026-11 bake-offs (docs/bakeoff-2026-11.md).
+
+- `label`: a chat provider draws whole-frame polygons by default; `TaskConfig.fallback` models are tried in order when a call
+  fails or returns no usable region (`strict` raises only when every model failed). Decision models and tile grids are for
+  naming or voting on a region.
+- `label`: `Labeller(vote=...)` and `vote_regions`: per-pixel majority of 2 or 3 models (trial, off by default).
+- `label`: `parse_regions` accepts a missing confidence (0.5), 0..1000 or pixel coordinates, and percent confidences.
+- `entry` (new): `propose_entries`, `match_confirmed` (Pillow template match), `protect`. Optional `[entry]` extra
+  (transformers, torch) adds OWLv2 zero-shot and image-guided detection.
+- Docs: "Choosing models" in the README with the recommended task configs.
+
 
 - `frigate`: the shared, safe Frigate config writer (`FrigateClient`, `Writer`, `Change`). Read-only by default. See docs/frigate-writer.md.
 

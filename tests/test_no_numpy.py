@@ -17,7 +17,7 @@ CODE = textwrap.dedent(
 
     sys.meta_path.insert(0, Block())
     import raptor_vision, raptor_vision.types, raptor_vision.providers, raptor_vision.tasks, raptor_vision.labels
-    import raptor_vision.label, raptor_vision.geometry, raptor_vision.interest, raptor_vision.mapstore
+    import raptor_vision.label, raptor_vision.entry, raptor_vision.geometry, raptor_vision.interest, raptor_vision.mapstore
     from PIL import Image
     import io
     from raptor_vision.label import Labeller
